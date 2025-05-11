@@ -10,6 +10,7 @@ fastapi[all]
 uvicorn
 langchain-pinecone
 pypdf
-
+retriever
+typing
 
 -e .

@@ -1,69 +1,49 @@
-import uvicorn
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
-
-from langchain_core.runnables import RunnablePassthrough
-
-from langchain_core.output_parsers import StrOutputParser
-
-from langchain_core.prompts import ChatPromptTemplate
-
-from retriever.retrieval import Retriever
-
-from utils.model_loader import ModelLoader
-
-from prompt_library.prompt import PROMPT_TEMPLATES
-
+from typing import List
+from starlette.responses import JSONResponse
+from data_ingestion.ingestion_pipeline import DataIngestion  # you already have this
+from agent.workflow import GraphBuilder  # this should be your graph stream handler
+from data_models.models import *
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static") 
-templates = Jinja2Templates(directory="templates")
-# Allow CORS (optional for frontend)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # set specific origins in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-load_dotenv()
-
-retriever_obj = Retriever()
-
-model_loader = ModelLoader()
-
-def invoke_chain(query:str):
+@app.post("/upload")
+async def upload_files(files: List[UploadFile] = File(...)):
+    try:
+        ingestion = DataIngestion()
+        ingestion.run_pipeline(files)
+        return {"message": "Files successfully processed and stored."}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
     
-    retriever=retriever_obj.load_retriever()
-    prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATES["product_bot"])
-    llm= model_loader.load_llm()
-    
-    chain=(
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    
-    )
-    
-    output=chain.invoke(query)
-    
-    return output
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """
-    Render the chat interface.
-    """
-    return templates.TemplateResponse("chat.html", {"request": request})
-
-@app.post("/get",response_class=HTMLResponse)
-async def chat(msg:str=Form(...)):
-    result=invoke_chain(msg)
-    print(f"Response: {result}")
-    return result
+@app.post("/query")
+async def query_chatbot(request: QuestionRequest):
+    try:
+        graph_service = GraphBuilder()
+        graph_service.build()
+        graph = graph_service.get_graph()
+        
+        # Assuming request is a pydantic object like: {"question": "your text"}
+        messages={"messages": [request.question]}
+        
+        result = graph.invoke(messages)
+        
+        # If result is dict with messages:
+        if isinstance(result, dict) and "messages" in result:
+            final_output = result["messages"][-1].content  # Last AI response
+        else:
+            final_output = str(result)
+        
+        return {"answer": final_output}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
